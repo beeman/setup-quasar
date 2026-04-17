@@ -1,0 +1,39 @@
+name: Smoke Test
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Setup Quasar
+        id: setup-quasar
+        uses: ./
+
+      - name: Verify outputs
+        shell: bash
+        run: |
+          if [ "${{ steps.setup-quasar.outputs.agave-version }}" != "3.1.13" ]; then
+            echo "Unexpected agave-version output: ${{ steps.setup-quasar.outputs.agave-version }}" >&2
+            exit 1
+          fi
+
+          if [ -z "${{ steps.setup-quasar.outputs.quasar-sha }}" ]; then
+            echo "quasar-sha output is empty" >&2
+            exit 1
+          fi
+
+      - name: Verify tools
+        shell: bash
+        run: |
+          cargo-build-sbf --version
+          command -v quasar
+          solana --version

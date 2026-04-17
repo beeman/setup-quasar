@@ -1,0 +1,172 @@
+name: Setup Quasar
+description: Installs the Agave Solana CLI and Quasar CLI
+
+inputs:
+  agave-version:
+    default: "3.1.13"
+    description: Agave release version to install
+    required: false
+  install-rust:
+    default: "true"
+    description: Whether to install Rust before building Quasar
+    required: false
+  quasar-ref:
+    default: "master"
+    description: Git ref to resolve Quasar from when quasar-sha is not set
+    required: false
+  quasar-repo:
+    default: "https://github.com/blueshift-gg/quasar.git"
+    description: Git repository to install Quasar from
+    required: false
+  quasar-sha:
+    default: ""
+    description: Exact Quasar commit SHA to install
+    required: false
+  rust-toolchain:
+    default: "stable"
+    description: Rust toolchain used to build Quasar
+    required: false
+
+outputs:
+  agave-version:
+    description: Agave version installed by the action
+    value: ${{ inputs.agave-version }}
+  quasar-sha:
+    description: Exact Quasar commit SHA installed by the action
+    value: ${{ steps.quasar-revision.outputs.sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      if: ${{ inputs.install-rust == 'true' }}
+      uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1
+      with:
+        cache: false
+        override: false
+        toolchain: ${{ inputs.rust-toolchain }}
+
+    - name: Configure Agave Paths
+      id: agave-paths
+      shell: bash
+      run: |
+        bin_root="$HOME/.local/share/solana/install/active_release/bin"
+        cache_root="$HOME/.cache/solana"
+        config_root="$HOME/.config/solana/install"
+        install_root="$HOME/.local/share/solana/install"
+
+        echo "bin_root=$bin_root" >> "$GITHUB_OUTPUT"
+        echo "cache_root=$cache_root" >> "$GITHUB_OUTPUT"
+        echo "config_root=$config_root" >> "$GITHUB_OUTPUT"
+        echo "install_root=$install_root" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Agave Cache
+      id: agave-cache-restore
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        key: ${{ runner.os }}-agave-${{ inputs.agave-version }}-${{ hashFiles('action.yml') }}
+        path: |
+          ${{ steps.agave-paths.outputs.cache_root }}
+          ${{ steps.agave-paths.outputs.config_root }}
+          ${{ steps.agave-paths.outputs.install_root }}
+
+    - name: Install Agave CLI
+      if: steps.agave-cache-restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        config_root="${{ steps.agave-paths.outputs.config_root }}"
+        install_root="${{ steps.agave-paths.outputs.install_root }}"
+        release="v${{ inputs.agave-version }}"
+
+        rm -rf "$config_root"
+        rm -rf "$install_root"
+
+        SOLANA_INSTALL_INIT_ARGS="$release --no-modify-path" \
+          sh -c "$(curl -sSfL https://release.anza.xyz/${release}/install)"
+
+    - name: Add Agave to PATH
+      shell: bash
+      run: |
+        bin_root="${{ steps.agave-paths.outputs.bin_root }}"
+
+        echo "$bin_root" >> "$GITHUB_PATH"
+        "$bin_root/cargo-build-sbf" --version
+        "$bin_root/solana" --version
+
+    - name: Save Agave Cache
+      if: steps.agave-cache-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        key: ${{ runner.os }}-agave-${{ inputs.agave-version }}-${{ hashFiles('action.yml') }}
+        path: |
+          ${{ steps.agave-paths.outputs.cache_root }}
+          ${{ steps.agave-paths.outputs.config_root }}
+          ${{ steps.agave-paths.outputs.install_root }}
+
+    - name: Resolve Quasar Revision
+      id: quasar-revision
+      shell: bash
+      run: |
+        repo="${{ inputs.quasar-repo }}"
+        repo_key="$(printf '%s' "$repo" | sha256sum | awk '{ print $1 }')"
+        sha="${{ inputs.quasar-sha }}"
+
+        if [ -z "$sha" ]; then
+          ref="${{ inputs.quasar-ref }}"
+          sha="$(git ls-remote "$repo" "$ref" | awk 'NR == 1 { print $1 }')"
+        fi
+
+        if [ -z "$sha" ]; then
+          echo "Unable to resolve Quasar revision" >&2
+          exit 1
+        fi
+
+        install_root="$HOME/.cache/quasar/$sha"
+
+        echo "install_root=$install_root" >> "$GITHUB_OUTPUT"
+        echo "repo_key=$repo_key" >> "$GITHUB_OUTPUT"
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Quasar Cache
+      id: quasar-cache-restore
+      uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        key: ${{ runner.os }}-quasar-${{ steps.quasar-revision.outputs.repo_key }}-${{ steps.quasar-revision.outputs.sha }}-${{ hashFiles('action.yml') }}
+        path: ${{ steps.quasar-revision.outputs.install_root }}
+
+    - name: Install Quasar
+      if: steps.quasar-cache-restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        install_root="${{ steps.quasar-revision.outputs.install_root }}"
+        repo="${{ inputs.quasar-repo }}"
+        sha="${{ steps.quasar-revision.outputs.sha }}"
+        temp_dir="$(mktemp -d)"
+
+        trap 'rm -rf "$temp_dir"' EXIT
+
+        rm -rf "$install_root"
+
+        git init "$temp_dir/quasar"
+        cd "$temp_dir/quasar"
+        git remote add origin "$repo"
+        git fetch --depth=1 origin "$sha"
+        git checkout --detach FETCH_HEAD
+
+        cargo install --force --path cli --root "$install_root"
+
+    - name: Add Quasar to PATH
+      shell: bash
+      run: |
+        bin_root="${{ steps.quasar-revision.outputs.install_root }}/bin"
+
+        echo "$bin_root" >> "$GITHUB_PATH"
+        export PATH="$bin_root:$PATH"
+        command -v quasar
+
+    - name: Save Quasar Cache
+      if: steps.quasar-cache-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+      with:
+        key: ${{ runner.os }}-quasar-${{ steps.quasar-revision.outputs.repo_key }}-${{ steps.quasar-revision.outputs.sha }}-${{ hashFiles('action.yml') }}
+        path: ${{ steps.quasar-revision.outputs.install_root }}
