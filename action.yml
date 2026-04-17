@@ -1,5 +1,8 @@
-name: Setup Quasar
+name: Beeman Setup Quasar
 description: Installs the Agave Solana CLI and Quasar CLI
+branding:
+  color: blue
+  icon: circle
 
 inputs:
   agave-version:
